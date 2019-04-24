@@ -1,0 +1,214 @@
+#!/bin/bash -l
+#PBS -l walltime=4:00:00,nodes=1:ppn=8,pmem=1000mb
+#PBS -m abe
+#PBS -M renxx275@umn.edu
+cd $PBS_O_WORKDIR
+# load the hisat2 module
+module load hisat2
+module load samtools
+
+##Mapping the reads with hisat2
+hisat2 -p 8 -x /panfs/roc/risdb/genomes/Homo_sapiens/hg38/hisat2/genome -1 Vcap_sicrtl_1_S3_R1_001.fastq.gz -2 Vcap_sicrtl_1_S3_R2_001.fastq.gz | samtools view -Sbo Vcap_sicrtl_1.bam -
+hisat2 -p 8 -x /panfs/roc/risdb/genomes/Homo_sapiens/hg38/hisat2/genome -1 Vcap_sicrtl_2_S6_R1_001.fastq.gz -2 Vcap_sicrtl_2_S6_R2_001.fastq.gz | samtools view -Sbo Vcap_sicrtl_2.bam -
+hisat2 -p 8 -x /panfs/roc/risdb/genomes/Homo_sapiens/hg38/hisat2/genome -1 Vcap_sicrtl_4_S9_R1_001.fastq.gz -2 Vcap_sicrtl_4_S9_R2_001.fastq.gz | samtools view -Sbo Vcap_sicrtl_4.bam -
+
+##sort and index with samtools
+samtools sort Vcap_sicrtl_1.bam -o Vcap_sicrtl_sorted_1.bam
+samtools sort Vcap_sicrtl_2.bam -o Vcap_sicrtl_sorted_2.bam
+samtools sort Vcap_sicrtl_4.bam -o Vcap_sicrtl_sorted_4.bam
+samtools index Vcap_sicrtl_sorted_1.bam
+samtools index Vcap_sicrtl_sorted_2.bam
+samtools index Vcap_sicrtl_sorted_4.bam
+
+##count read with featureCounts
+featureCounts -p -t exon -g gene_name -a /panfs/roc/risdb/genomes/Homo_sapiens/hg38/annotation/Homo_sapiens.GRCh38.76.gtf -o counts025.txt Vcap_si025_sorted_1.bam Vcap_si025_sorted_2.bam Vcap_si025_sorted_4.bam
+featureCounts -p -t exon -g gene_name -a /panfs/roc/risdb/genomes/Homo_sapiens/hg38/annotation/Homo_sapiens.GRCh38.76.gtf -o counts033.txt Vcap_si033_sorted_1.bam Vcap_si033_sorted_2.bam Vcap_si033_sorted_4.bam
+featureCounts -p -t exon -g gene_name -a /panfs/roc/risdb/genomes/Homo_sapiens/hg38/annotation/Homo_sapiens.GRCh38.76.gtf -o countscrtl.txt Vcap_sicrtl_sorted_1.bam Vcap_sicrtl_sorted_2.bam Vcap_sicrtl_sorted_4.bam
+
+############################Different expression analysis by limma package############################################
+
+####load libraries####
+library("edgeR")
+library("limma")
+
+
+src.data <- read.delim("countsall.txt", row.names="Geneid", check.names=FALSE);
+data <- src.data[,seq(2,10)];
+group <- factor(c(1,1,1,2,2,2,3,3,3))
+
+
+y <- DGEList(counts=data, group=group);
+y$genes <- data.frame(Length=src.data$Length);
+rownames(y$genes) <- rownames(y$counts);
+
+# filtering out low expressed genes
+#  the minimum number of samples in each group is three, over here.
+keep <- rowSums(cpm(y)>1) >= 3
+table(keep);
+y <- y[keep, keep.lib.sizes=FALSE];
+
+
+#create model matrix
+design <- model.matrix(~0+group);
+rownames(design) <- colnames(y)
+design
+#group1 group2 group3
+#Vcap_sicrtl_1      1      0      0
+#Vcap_sicrtl_2      1      0      0
+#Vcap_sicrtl_4      1      0      0
+#Vcap_si025_1       0      1      0
+#Vcap_si025_2       0      1      0
+#Vcap_si025_4       0      1      0
+#Vcap_si033_1       0      0      1
+#Vcap_si033_2       0      0      1
+#Vcap_si033_4       0      0      1
+# Note that the filtering does not use knowledge of what treatment corresponds to each sample, so
+# the filtering does not bias the subsequent differential expression analysis.
+# The TMM normalization is applied to account for the compositional biases:
+
+
+# normalization by the library sizes
+y <- calcNormFactors(y);
+y$samples;
+
+write.table(rpkm(y), file=paste0('rpkm','.count.txt'), sep='\t', row.names = TRUE, quote = FALSE);
+
+barplot(y$samples$lib.size,names=colnames(y),las=2)
+# Add a title to the plot
+title("Barplot of library sizes")
+
+# normalise the read counts with 'voom' function
+v <- voom(y,design,plot = TRUE)
+# extract the normalised read counts
+counts.voom <- v$E
+
+boxplot(v$E, xlab="", ylab="Log2 counts per million",las=2,main="Voom transformed logCPM")
+## Let's add a blue horizontal line that corresponds to the median logCPM
+abline(h=median(v$E),col="blue")
+
+# save normalised expression data into output dir
+write.table(counts.voom,file="counts.voom.txt",row.names=T,quote=F,sep="\t");
+########################################################################################################################
+# fit linear model for each gene given a series of libraries
+fit <- lmFit(v, design)
+# construct the contrast matrix corresponding to specified contrasts of a set of parameters
+matrix.2vs1 <- makeContrasts(group2-group1,levels=design)
+# compute estimated coefficients and standard errors for a given set of contrasts
+fit.2vs1 <- contrasts.fit(fit, matrix.2vs1)
+
+# compute moderated t-statistics of differential expression by empirical Bayes moderation of the standard errors
+fit.2vs1 <- eBayes(fit.2vs1)
+options(digits=3)
+
+#colnames(fit$coefficients)
+
+summary(decideTests(fit.2vs1, p.value=0.05,lfc=1))
+# group2 - group1
+# Down               170
+# NotSig           11685
+# Up                 646
+
+num = length(fit.2vs1$genes$Length)
+degs.2vs1 <- topTable(fit.2vs1, coef="group2 - group1", confint=TRUE, number = num)
+write.table(degs.2vs1, file=paste0('si025','.degs.txt'), sep='\t',row.names = TRUE, quote = FALSE);
+
+############## si033 VS control #################
+# construct the contrast matrix corresponding to specified contrasts of a set of parameters
+matrix.3vs1 <- makeContrasts(group3-group1,levels=design)
+# compute estimated coefficients and standard errors for a given set of contrasts
+fit.3vs1 <- contrasts.fit(fit, matrix.3vs1)
+
+# compute moderated t-statistics of differential expression by empirical Bayes moderation of the standard errors
+fit.3vs1 <- eBayes(fit.3vs1)
+options(digits=3)
+
+#colnames(fit$coefficients)
+
+summary(decideTests(fit.3vs1, p.value=0.05,lfc=1))
+# group3 - group1
+# Down               241
+# NotSig           11912
+# Up                 348
+
+num = length(fit.3vs1$genes$Length)
+degs.3vs1 <- topTable(fit.3vs1, coef="group3 - group1", confint=TRUE, number = num)
+write.table(degs.3vs1, file=paste0('si033','.degs.txt'), sep='\t',row.names = TRUE, quote = FALSE)
+
+#######################################################################################################################
+################GSEA analysis Data preparation (*.rnk)#################################################################
+
+results025 <- read.delim("si025.degs.txt", check.names=FALSE)
+results033 <- read.delim("si033.degs.txt", check.names=FALSE)
+#############convert ensemble id to gene symbols#######################
+#############install biomaRt package################################
+#source("http://bioconductor.org/biocLite.R")
+#biocLite("biomaRt")
+##load biomaRt
+library("biomaRt")
+library(dplyr)
+ensembl = useMart("ensembl",dataset="hsapiens_gene_ensembl")
+filters = listFilters(ensembl)
+
+enidtognf<-function(data){
+    test<-rownames(data)
+    genesym<-getBM(attributes=c('ensembl_gene_id', "hgnc_symbol"), filters = "ensembl_gene_id", values=test, mart=ensembl)
+    data<-data[test%in%genesym$ensembl_gene_id,]
+    return(data)
+}
+
+results033test<-enidtognf(results033)
+results033test$geneid<-rownames(results033test)
+genesym$geneid<-genesym$ensembl_gene_id
+results033final<-full_join(results033test,genesym,by="geneid")
+results033final$genename<-results033final$hgnc_symbol
+
+
+#Create ranks:
+rankf<-function(results){
+    results.ord <- results[ order(-results[,"logFC"]), ]
+    results.ord<-filter(results.ord,genename!="")
+    ranks<-data.frame("genename"=results.ord[,ncol(results.ord)],"rank"=results.ord[,"logFC"])
+    #ranks<-data.frame("rank"=results.ord[,"logFC"])
+    #names(ranks) <- results.ord[,ncol(results.ord)]
+   return(ranks)
+    
+}
+
+rank033<-rankf(results=results033final)
+write.table(rank033, file=paste0('rank033','.txt'), sep='\t',row.names = FALSE, col.names=FALSE,quote = FALSE)
+
+
+#################Heatmap#########################################
+library("RColorBrewer")
+library("pheatmap")
+
+#table<- as.data.frame(degs$table)
+#name.list <- rownames(subset(table, FDR<0.01 & (logFC> 2 || logFC < -2)))
+
+#logcpm.matrix <- read.delim("./tumor_gtex.logcpm.txt",row.names="Geneid",check.names=FALSE)
+
+#selected.matrix <- subset(logcpm.matrix, rownames(logcpm.matrix) %in% name.list)
+
+mat <- as.matrix(read.delim("./big_set/LFC.heatmap.txt",row.names="Geneid",check.names=FALSE))
+mat <- as.matrix(read.delim("./small_set/LFC.heatmap.txt",row.names="Geneid",check.names=FALSE))
+#annotation_col <- data.frame(group=contract$condition)
+#rownames(annotation_col) <- contract$Sample_ID
+
+H<-pheatmap(mat,
+          show_colnames = T,
+          show_rownames = T,
+          fontsize_row=5,
+          fontsize_col=12,
+          cluster_cols = F,
+          cluster_rows = T,
+          color = colorRampPalette(rev(brewer.pal(n = 11, name ="RdYlBu")))(500),
+#          #color = colorRampPalette((brewer.pal(n = 11, name ="RdYlBu")))(500),
+          #clustering_distance_rows="correlation",
+          #clustering_distance_cols="correlation",
+#          #annotation_row = annotation_row,
+#          annotation_col = annotation_col,
+#          #annotation_colors = mat_colors,
+           #border_color = NA,
+#          scale = "row",
+          method="complete”)
+
