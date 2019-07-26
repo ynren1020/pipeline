@@ -1,0 +1,19 @@
+For self-learning/-reference purpose, I will post RNAseq analysis procedures below, from the very beginning of library preparation to the downstream analysis, e.g. DEG and GSEA.
+
+RNAseq analysis workflow combines a collection of exprimental and computational methods to determine the identity and abundance of RNA sequences in biological samples.
+
+Briefly, the workflow can be divided into the following steps:
+1) isolation of RNA from e.g.,cell, tissue, whole-animal samples
+2) preparation of libraries that represent RNA species in the samples
+3) sequencing
+4) bioinformatic data analysis
+
+Isolation of RNA
+--using kits commericially available, e.g., RNAEasy (Qiagen Hilden, Germany), TRIZOL (Life Technologies, Carlsbad, CA) or RiboPure (Ambion, Austin, TX)
+--genomic DNA contamination, using DNase to digest (DNase kits)
+--require 0.1 - 10 ug of total RNA (standard library), 10 pg of RNA for high-sensitivity protocols 
+--quality control (check for degradation, purity, and quantity
+
+Library Preparation
+
+
